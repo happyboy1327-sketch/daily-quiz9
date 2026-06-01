@@ -19,45 +19,67 @@ let LAST_FETCH_TIME = 0; // 마지막 데이터 로드 시간 (타임스탬프)
 // ==========================================================
 // 퀴즈 생성 프롬프트 및 설정
 // ==========================================================
-const QUIZ_GENERATION_PROMPT = {
-    contents: [
-        {
+// 1. 전체 분야 리스트 및 상태 관리 변수
+const allTopics = [
+    "환경", "과학", "역사", "디지털 리터러시", "인권 리터러시", 
+    "한글 맞춤법", "코딩", "안전 및 건강상식", "경제", "지리", "정치", "문화예술"
+];
+
+let usedTopics = []; // 사용된 분야 기록용
+
+function getNextPrompt() {
+    // 2. 만약 모든 분야를 다 썼다면 초기화
+    if (usedTopics.length >= allTopics.length) {
+        usedTopics = [];
+    }
+
+    // 3. 이번에 사용할 5개 분야 선정
+    const remainingTopics = allTopics.filter(t => !usedTopics.includes(t));
+    const currentBatch = remainingTopics.slice(0, 5);
+    
+    // 4. 상태 업데이트
+    usedTopics.push(...currentBatch);
+
+    // 5. 프롬프트 생성 (동적 지시사항 포함)
+    return {
+        contents: [{
             role: "user",
-            parts: [
-                {
-                    text: `
-다양한 분야(환경, 과학, 역사, 디지털 리터러시, 인권 리터러시, 한글 맞춤법, 코딩, 안전 및 건강상식, 경제, 지리, 정치, 문화예술 등)에서 중하급-중급 난이도의 상식 퀴즈 5개를 생성하세요.
+            parts: [{
+                text: `
+당신은 상식 퀴즈 전문 AI입니다. 아래 5가지 분야에서만 각각 1문제씩, 총 5문제를 생성하세요.
+**이번에 출제할 분야:** ${currentBatch.join(", ")}
 
 **필수 규칙:**
-1. 각 문제는 서로 다른 분야에서 출제해야 한다. **이미 썼던 각 5가지 분야는 남은 분야 다 쓸때까지 중복 없어야 함.**
-2. 한글 맞춤법 문제는 국립국어원 표준 규정 준수 (띄어쓰기, 사이시옷, 외래어 표기법 등)
-3. 보기는 정확히 4개
-4. 문제와 정답이 반드시 개연성 있고 말이 되도록 하기. Ex) 문제-소크라테스를 제외한 학자 중... 답-소크라테스 ←절대 금지
-5. correctAnswerIndex는 0부터 시작 (첫 번째=0, 두 번째=1, 세 번째=2, 네 번째=3)
-6. explanation은 반드시 "정답: [정답보기텍스트]. [이유...]" 형식으로 시작
-7. 모든 오답 보기도 해설에서 왜 틀렸는지 설명
+1. 위 지정된 5개 분야에서 각 1문제씩 총 5문제를 생성할 것.
+2. 보기는 정확히 4개.
+3. correctAnswerIndex는 0~3 인덱스 사용.
+4. explanation은 반드시 "정답은 [정답보기텍스트]입니다. [이유...]" 형식으로 시작.
+5. 모든 오답 보기도 해설에서 왜 틀렸는지 설명.
 
 **JSON 형식 예시:**
 [
   {
+    "topic": "분야명",
     "question": "질문 내용",
     "choices": ["보기1", "보기2", "보기3", "보기4"],
-    "correctAnswerIndex": 1,
-    "explanation": "정답: 보기2. 이유는... 보기1은 틀렸습니다. 왜냐하면... 보기3은... 보기4는..."
+    "correctAnswerIndex": 0,
+    "explanation": "정답은 보기1입니다. [이유]. 보기2는 [이유]. 보기3은 [이유]. 보기4는 [이유]."
   }
 ]
 
-JSON 배열만 반환하세요. [REQUEST_ID: ${Date.now()}]
-`,
-                }
-            ]
+위 규칙을 준수하여 JSON 배열만 반환하세요.`
+            }]
+        }],
+        generationConfig: { 
+            responseMimeType: "application/json",
+            temperature: 0.8 
         }
-    ],
-    generationConfig: { 
-        responseMimeType: "application/json",
-        temperature: 0.9, 
-    }
-};
+    };
+}
+
+// 사용 예시
+// const prompt = getNextPrompt();
+// const result = await model.generateContent(prompt);
 
 // ==========================================================
 // 1. 핵심 유틸리티 함수
