@@ -237,7 +237,7 @@ async function fetchNewQuizData() {
     console.log(`[DATA] Gemini API를 통해 새로운 퀴즈 데이터 로딩을 시작합니다...`);
     
     const uniqueId = Date.now(); 
-    const currentPrompt = JSON.parse(JSON.stringify(QUIZ_GENERATION_PROMPT));
+    const currentPrompt = JSON.parse(JSON.stringify(getNextPrompt));
     currentPrompt.contents[0].parts[0].text = currentPrompt.contents[0].parts[0].text.replace(/\[REQUEST_ID: \d+\]/, `[REQUEST_ID: ${uniqueId}]`);
 
     const MAX_RETRIES = 2; 
