@@ -73,48 +73,39 @@ function sanitizeQuizData(qs){ return qs.map(({correctAnswerIndex,...safe})=>saf
 
 // ======= API 호출 및 갱신 =======
 async function fetchNewQuizData(){
-  const prompt = getNextPrompt();
+  console.log(`[DATA] Gemini API를 통해 새로운 퀴즈 데이터 로딩을 시작합니다...`);
   const MAX_RETRIES = 2;
-  let success=false;
+  let success = false;
 
-  for(let attempt=0; attempt<=MAX_RETRIES; attempt++){
-    try{
-      const res = await axios.post(GEMINI_API_URL,prompt,{timeout:90000});
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const prompt = getNextPrompt(); // 여기서 바로 프롬프트 생성
+      const res = await axios.post(GEMINI_API_URL, prompt, { timeout: 90000 });
+
       const content = res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-      if(!content) throw new Error("유효한 후보 없음");
+      if (!content) throw new Error("유효한 후보 없음");
 
-      const cleaned = content.replace(/```json|```/g,'').trim();
+      const cleaned = content.replace(/```json|```/g, '').trim();
       const parsed = JSON.parse(cleaned);
 
-      if(Array.isArray(parsed)&&parsed.length>=3){
+      if (Array.isArray(parsed) && parsed.length >= 3) {
         MASTER_QUIZ_DATA = assignQuizIds(parsed);
         LAST_FETCH_TIME = Date.now();
-        success=true;
-        console.log(`[DATA] 퀴즈 ${MASTER_QUIZ_DATA.length}개 갱신 완료`);
+        success = true;
+        console.log(`[DATA] ✅ 퀴즈 ${MASTER_QUIZ_DATA.length}개 갱신 완료`);
         break;
       } else {
         throw new Error("문제 수 부족");
       }
-    } catch(err){
+
+    } catch (err) {
       console.error(`[FETCH ERROR] ${err.message} (시도 ${attempt+1})`);
-      if(attempt<MAX_RETRIES) await new Promise(r=>setTimeout(r,Math.pow(2,attempt)*1000));
+      if (attempt < MAX_RETRIES) await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000));
     }
   }
 
-  if(!success) LAST_FAILURE_TIME = Date.now();
+  if (!success) LAST_FAILURE_TIME = Date.now();
   return success;
-}
-
-async function ensureDataFreshness(){
-  const now = Date.now();
-  const stale = (now-LAST_FETCH_TIME)>ONE_HOUR;
-  const recentFail = (now-LAST_FAILURE_TIME)<300000;
-
-  if(recentFail) return;
-  if(MASTER_QUIZ_DATA.length===0 || stale){
-    console.log(`[CHECK] Data stale or missing. Refreshing...`);
-    await fetchNewQuizData();
-  }
 }
 
 // ======= 미들웨어 & 라우트 =======
