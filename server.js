@@ -1,20 +1,42 @@
-// server.js
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const axios = require('axios');
 const seedrandom = require('seedrandom');
+
 const app = express();
+app.use(cors());
+app.use(express.json());
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+
 const ONE_HOUR = 3600000;
 
+// =================================
+// 메모리 저장
+// =================================
 let MASTER_QUIZ_DATA = [];
 let LAST_FETCH_TIME = 0;
 let LAST_FAILURE_TIME = 0;
 
-// ======= 퀴즈 프롬프트 =======
+// =================================
+// fallback 퀴즈
+// =================================
+const FALLBACK_QUIZ = [
+  {
+    id: 1,
+    topic: "기본",
+    question: "대한민국 수도는?",
+    choices: ["서울", "부산", "대구", "인천"],
+    correctAnswerIndex: 0,
+    explanation: "정답은 서울입니다."
+  }
+];
+
+// =================================
+// 퀴즈 프롬프트
+// =================================
 const allTopics = [
   "문화예술","환경","과학","역사","디지털 리터러시","인권 리터러시",
   "한글 맞춤법","코딩","안전 및 건강상식","경제","지리","정치"
@@ -28,108 +50,120 @@ function getNextPrompt() {
   usedTopics.push(...batch);
 
   return {
-    contents: [{
+    contents:[{
       role:"user",
       parts:[{
-        text: `
-당신은 상식 퀴즈 전문 AI입니다. 아래 5가지 분야에서 1문제씩 총 5문제를 생성하세요. 단, 다 쓸때까지 분야 중복 없음.
-이번 분야: ${batch.join(", ")}
-
+        text:`5개 분야에서 각 1문제씩 총 5문제 생성.
+분야: ${batch.join(", ")}
 JSON 배열만 반환:
 [
   {
-    "topic":"분야명",
-    "question":"질문 내용",
-    "choices":["보기1","보기2","보기3","보기4"],
+    "topic":"...",
+    "question":"...",
+    "choices":["A","B","C","D"],
     "correctAnswerIndex":0,
-    "explanation":"정답은 보기1입니다. 이유..."
+    "explanation":"정답은 A입니다..."
   }
-]
-        `
+]`
       }]
     }],
     generationConfig:{ responseMimeType:"application/json", temperature:0.8 }
   };
 }
 
-// ======= 유틸 =======
-function getDailySeed(){
-  const d = new Date();
-  return `${d.getUTCFullYear()}${String(d.getUTCMonth()+1).padStart(2,'0')}${String(d.getUTCDate()).padStart(2,'0')}`;
-}
-
-function shuffleArray(array, seed){
-  const rng = seedrandom(seed);
-  for(let i=array.length-1;i>0;i--){
-    const j = Math.floor(rng()*(i+1));
-    [array[i],array[j]]=[array[j],array[i]];
-  }
-  return array;
-}
-
+// =================================
+// 유틸
+// =================================
 function assignQuizIds(data){ return data.map((q,i)=>({...q,id:i+1})); }
+function getDailySeed(){ const d=new Date(); return `${d.getUTCFullYear()}${String(d.getUTCMonth()+1).padStart(2,'0')}${String(d.getUTCDate()).padStart(2,'0')}`; }
+function shuffleArray(array, seed){ const rng = seedrandom(seed); for(let i=array.length-1;i>0;i--){const j=Math.floor(rng()*(i+1)); [array[i],array[j]]=[array[j],array[i]];} return array; }
 function getKRandomQuestions(K, master){ return shuffleArray([...master], getDailySeed()).slice(0,K); }
 function sanitizeQuizData(qs){ return qs.map(({correctAnswerIndex,...safe})=>safe); }
 
-// ======= API 호출 및 갱신 =======
+// =================================
+// Gemini API 호출
+// =================================
 async function fetchNewQuizData(){
-  console.log(`[DATA] Gemini API를 통해 새로운 퀴즈 데이터 로딩을 시작합니다...`);
+  const prompt = getNextPrompt();
   const MAX_RETRIES = 2;
-  let success = false;
+  let success=false;
 
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      const prompt = getNextPrompt(); // 여기서 바로 프롬프트 생성
-      const res = await axios.post(GEMINI_API_URL, prompt, { timeout: 90000 });
+  for(let attempt=0; attempt<=MAX_RETRIES; attempt++){
+    try{
+      const res = await axios.post(GEMINI_API_URL,prompt,{timeout:30000});
+      const text = res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if(!text) throw new Error("EMPTY_RESPONSE");
 
-      const content = res.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!content) throw new Error("유효한 후보 없음");
+      const parsed = JSON.parse(text.replace(/```json|```/g,'').trim());
 
-      const cleaned = content.replace(/```json|```/g, '').trim();
-      const parsed = JSON.parse(cleaned);
-
-      if (Array.isArray(parsed) && parsed.length >= 3) {
+      if(Array.isArray(parsed) && parsed.length>=3){
         MASTER_QUIZ_DATA = assignQuizIds(parsed);
         LAST_FETCH_TIME = Date.now();
-        success = true;
-        console.log(`[DATA] ✅ 퀴즈 ${MASTER_QUIZ_DATA.length}개 갱신 완료`);
+        success=true;
+        console.log("[DATA] quiz loaded:", MASTER_QUIZ_DATA.length);
         break;
-      } else {
-        throw new Error("문제 수 부족");
       }
 
-    } catch (err) {
-      console.error(`[FETCH ERROR] ${err.message} (시도 ${attempt+1})`);
-      if (attempt < MAX_RETRIES) await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000));
+      throw new Error("BAD_DATA");
+
+    }catch(err){
+      const status = err.response?.status;
+      if(status===429){ console.error("[429] rate limit"); break; }
+      console.error("[FETCH ERROR]", err.message, `(attempt ${attempt+1})`);
+      if(attempt<MAX_RETRIES) await new Promise(r=>setTimeout(r,Math.pow(2,attempt)*1000));
     }
   }
 
-  if (!success) LAST_FAILURE_TIME = Date.now();
+  if(!success) LAST_FAILURE_TIME = Date.now();
   return success;
 }
 
-// ======= 미들웨어 & 라우트 =======
-app.use(cors());
-app.use(express.json());
+// =================================
+// 데이터 갱신 체크
+// =================================
+async function ensureDataFreshness(){
+  const now=Date.now();
+  const stale=(now-LAST_FETCH_TIME)>ONE_HOUR;
+  const recentFail=(now-LAST_FAILURE_TIME)<300000;
 
-app.get('/', (req,res)=>{
+  if(recentFail) return;
+  if(MASTER_QUIZ_DATA.length===0 || stale){
+    console.log("[CHECK] Data stale or missing. Refreshing...");
+    const ok = await fetchNewQuizData();
+    if(!ok){
+      console.log("[FALLBACK] using fallback quiz");
+      MASTER_QUIZ_DATA = FALLBACK_QUIZ;
+    }
+  }
+}
+
+// =================================
+// routes
+// =================================
+app.get('/',(req,res)=>{
   res.sendFile(path.join(__dirname,'index.html'));
 });
 
 app.get('/api/quiz', async (req,res)=>{
-  await ensureDataFreshness();
-  if(MASTER_QUIZ_DATA.length===0) return res.status(503).json({error:"퀴즈 데이터를 가져올 수 없습니다."});
-  const qs = getKRandomQuestions(5, MASTER_QUIZ_DATA);
-  res.json(sanitizeQuizData(qs));
+  try{
+    await ensureDataFreshness();
+    const qs = getKRandomQuestions(5, MASTER_QUIZ_DATA);
+    res.json(sanitizeQuizData(qs));
+  }catch(err){
+    console.error(err);
+    res.json(sanitizeQuizData(FALLBACK_QUIZ));
+  }
 });
 
 app.get('/api/answer-key', async (req,res)=>{
-  await ensureDataFreshness();
-  if(MASTER_QUIZ_DATA.length===0) return res.status(503).json({error:"데이터 없음"});
-  const qs = getKRandomQuestions(5, MASTER_QUIZ_DATA);
-  const key = {};
-  qs.forEach(q=>{ key[q.id]=q.correctAnswerIndex; });
-  res.json(key);
+  try{
+    const qs = getKRandomQuestions(5, MASTER_QUIZ_DATA);
+    const key = {};
+    qs.forEach(q=>{ key[q.id]=q.correctAnswerIndex; });
+    res.json(key);
+  }catch{
+    res.json({});
+  }
 });
 
 module.exports = app;
