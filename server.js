@@ -396,6 +396,3 @@ app.get('/api/answer-key', async (req, res) => {
 // 4. Vercel 서버리스 모듈 내보내기 (필수)
 // ==========================================================
 module.exports = app;
-    
-  
-
