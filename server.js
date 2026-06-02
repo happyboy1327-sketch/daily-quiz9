@@ -234,53 +234,88 @@ function sanitizeQuizData(questions) {
 // ==========================================================
 
 async function fetchNewQuizData() {
-    console.log(`[DATA] Gemini API 호출 시작...`);
+    console.log(`[DATA] Gemini API를 통해 새로운 퀴즈 데이터 로딩을 시작합니다...`);
     
-    try {
-        const response = await axios.post(GEMINI_API_URL, getNextPrompt(), { timeout: 30000 });
-        
-        // 1. 응답 텍스트를 안전하게 추출
-        const rawText = response?.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-        
-        // 2. 응답이 아예 없거나, 문자열 'undefined'인 경우를 원천 차단
-        if (!rawText || rawText === "undefined" || typeof rawText !== 'string') {
-            throw new Error("Gemini 응답이 비어있음");
+    const uniqueId = Date.now(); 
+    const currentPrompt = JSON.parse(JSON.stringify(QUIZ_GENERATION_PROMPT));
+    currentPrompt.contents[0].parts[0].text = currentPrompt.contents[0].parts[0].text.replace(/\[REQUEST_ID: \d+\]/, `[REQUEST_ID: ${uniqueId}]`);
+
+    const MAX_RETRIES = 2; 
+    let success = false;
+    let lastError = null;
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        if (attempt > 0) {
+            console.log(`[DATA] API 호출 재시도 중... (시도 ${attempt + 1}/${MAX_RETRIES + 1})`);
+            const delay = Math.pow(2, attempt) * 1000;
+            await new Promise(resolve => setTimeout(resolve, delay)); 
         }
 
-        const cleanedText = rawText.replace(/```json|```/g, '').trim();
-        
-        // 3. JSON 파싱을 별도 블록으로 감싸서 에러가 나도 catch로 넘기게 함
-        let quizData;
         try {
-            quizData = JSON.parse(cleanedText);
-        } catch (parseError) {
-            throw new Error("JSON 파싱 실패: " + cleanedText.substring(0, 50));
-        }
+            const response = await axios.post(
+                GEMINI_API_URL, 
+                currentPrompt,
+                { timeout: 90000 } 
+            );
+            
+            const generatedContent = response.data;
+            let quizJsonText = '';
+            
+            if (generatedContent.candidates && generatedContent.candidates.length > 0) {
+                quizJsonText = generatedContent.candidates[0].content.parts[0].text;
+            } else {
+                 throw new Error("Gemini API 응답에서 유효한 후보를 찾을 수 없습니다.");
+            }
 
-        // 4. 배열 여부 확인
-        if (!Array.isArray(quizData)) throw new Error("데이터가 배열이 아님");
-
-        // 5. 검증 통과 데이터만 필터링 (validateAndFixQuiz는 이전 코드 재사용)
-        const validData = quizData.map(q => validateAndFixQuiz(q)).filter(q => q !== null);
-        
-        if (validData.length > 0) {
-            MASTER_QUIZ_DATA = assignQuizIds(validData);
-            LAST_FETCH_TIME = Date.now();
-            console.log(`[DATA] 성공적으로 ${MASTER_QUIZ_DATA.length}개 로드됨`);
-            return true;
-        } else {
-            throw new Error("유효한 문제가 하나도 없음");
+            const cleanedJsonText = quizJsonText.replace(/```json|```/g, '').trim();
+            const newQuizData = JSON.parse(cleanedJsonText);
+            
+            // 💡 필터링 검증 로직: 유효한 문제만 추출
+            const filterResult = filterValidQuizzes(newQuizData);
+            
+            if (filterResult.fixedCount > 0) {
+                console.log(`[AUTO-FIX] ✅ ${filterResult.fixedCount}개의 문제 자동 수정 완료`);
+            }
+            
+            if (filterResult.invalidCount > 0) {
+                console.warn(`[VALIDATION WARNING] ${filterResult.invalidCount}개의 문제가 검증 실패로 제외되었습니다:`);
+                filterResult.errors.forEach(err => console.warn(`  ⚠️  ${err}`));
+            }
+            
+            // 💡 최소 3개 이상의 유효한 문제가 있어야 성공으로 간주
+            if (filterResult.validQuizzes.length >= 3) {
+                MASTER_QUIZ_DATA = assignQuizIds(filterResult.validQuizzes); 
+                LAST_FETCH_TIME = Date.now(); 
+                console.log(`[DATA] ✅ 퀴즈 데이터 갱신 완료. 총 ${MASTER_QUIZ_DATA.length}개의 문제가 로드되었습니다.`);
+                if (filterResult.invalidCount === 0) {
+                    console.log(`[VALIDATION] ✅ 모든 퀴즈 데이터가 검증을 통과했습니다.`);
+                } else {
+                    console.log(`[VALIDATION] ⚠️  ${filterResult.validQuizzes.length}개 문제만 사용 (${filterResult.invalidCount}개 제외됨)`);
+                }
+                success = true;
+                break;
+            } else {
+                throw new Error(`유효한 퀴즈가 ${filterResult.validQuizzes.length}개뿐입니다 (최소 3개 필요). 재시도합니다.`);
+            }
+            
+        } catch (error) {
+            lastError = error;
+            console.error(`[DATA ERROR] 퀴즈 데이터를 가져오는 데 실패했습니다 (시도 ${attempt + 1}/${MAX_RETRIES + 1}). 오류: ${error.message}`);
+            
+            if (error.code === 'ECONNABORTED') {
+                 console.error("[TIMEOUT] Axios 요청이 90초 타임아웃되었습니다. Vercel 함수 제한 시간 초과 가능성 있음.");
+            } else if (error.response) {
+                 console.error(`[API FAIL] Gemini API 응답 상태 코드: ${error.response.status}`);
+            }
         }
-        
-    } catch (error) {
-        console.error("[CRITICAL] 데이터 로딩 실패:", error.message);
-        // 서버를 죽이지 않고 false만 반환
-        return false;
     }
+    
+    if (!success) {
+        console.error('[DATA FAIL] ❌ 모든 시도에서 퀴즈 데이터 로딩에 실패했습니다.');
+    }
+    
+    return success;
 }
-    
-    
-  
 
 
 // ==========================================================
@@ -361,3 +396,6 @@ app.get('/api/answer-key', async (req, res) => {
 // 4. Vercel 서버리스 모듈 내보내기 (필수)
 // ==========================================================
 module.exports = app;
+    
+  
+
